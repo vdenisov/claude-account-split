@@ -8,7 +8,7 @@
       1. writes profiles.config.ps1 with the work root and work config dir
       2. creates the work config directory
       3. optionally seeds it from the personal profile (settings.json, skills, plugins)
-      4. repoints the personal settings.json status line at the shared script (with a backup)
+      4. points both profiles' settings.json status line at the shared script (with a backup)
       5. adds the dot-source line to the PowerShell 7 and Windows PowerShell 5.1 profiles
 
     and then prints the steps that need a human: logging the work account in, and running
@@ -186,7 +186,9 @@ $profilePaths = @(
 
 $stale = $false
 foreach ($path in $profilePaths) {
-    $existing = if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw } else { '' }
+    # Get-Content -Raw returns nothing at all for an empty file, and a [string] cast passes that
+    # through as $null rather than ''. Interpolation is the form that always yields a string.
+    $existing = "$(if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw })"
     if ($existing.Contains($switcher)) {
         Write-Skip "$path already loads this switcher"
         continue
