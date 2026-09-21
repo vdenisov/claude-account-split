@@ -30,6 +30,7 @@ Both accounts share one binary (`~\.local\bin\claude.exe`) and one IDE lock-file
 | `migrate-workspaces.ps1` | one-shot copy of work project state from personal to work |
 | `statusline-payload.sample.json` | a captured status-line payload, for testing edits |
 | `package.ps1` | builds a shareable zip of everything except the local config |
+| `LICENSE` | MIT |
 
 To try a status-line change without restarting a session:
 
@@ -172,3 +173,7 @@ correctly when that happens. Trimming both would leave the personal account with
 the one case it can actually encounter.
 
 Concretely: the personal `CLAUDE.md` is not edited by this setup at all.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
