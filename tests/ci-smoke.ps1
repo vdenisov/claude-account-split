@@ -181,7 +181,9 @@ Section "migrate-workspaces.ps1"
 # Directory names are hardcoded as Claude Code writes them, not derived with the rule under test:
 # every non-alphanumeric character, spaces included, becomes a hyphen.
 $projects = Join-Path $personal 'projects'
-foreach ($name in 'C--ci-work-Acme-Corp-repo-a', 'C--elsewhere-x') {
+# 'Acme Corp Archive' is a sibling of the work root whose directory name nonetheless starts with the
+# root's encoding -- the case a name-prefix match used to sweep in.
+foreach ($name in 'C--ci-work-Acme-Corp-repo-a', 'C--ci-work-Acme-Corp-Archive-z', 'C--elsewhere-x') {
     New-Item -ItemType Directory -Force -Path (Join-Path $projects $name) | Out-Null
     Set-Content -LiteralPath (Join-Path $projects "$name\session.jsonl") -Value '{}'
 }
@@ -191,6 +193,8 @@ foreach ($name in 'C--ci-work-Acme-Corp-repo-a', 'C--elsewhere-x') {
   "projects": {
     "C:/ci work/Acme Corp/repo-a": { "hasTrustDialogAccepted": true },
     "c:/ci work/Acme Corp/repo-a": { "hasTrustDialogAccepted": true },
+    "C:/ci work/Acme Corp/never-ran": { "hasTrustDialogAccepted": true },
+    "C:/ci work/Acme Corp Archive/z": { "hasTrustDialogAccepted": true },
     "C:/elsewhere/x": { "hasTrustDialogAccepted": true }
   },
   "mcpServers": {}
@@ -206,12 +210,23 @@ if ($isCore) {
     $target = Join-Path $work 'projects'
     Check "copies the transcript dir under a work root with spaces" (Test-Path -LiteralPath (Join-Path $target 'C--ci-work-Acme-Corp-repo-a\session.jsonl'))
     Check "leaves the transcript dir outside the work root" (-not (Test-Path -LiteralPath (Join-Path $target 'C--elsewhere-x')))
+    Check "leaves a sibling sharing the root's name prefix" (-not (Test-Path -LiteralPath (Join-Path $target 'C--ci-work-Acme-Corp-Archive-z')))
+    $squashed = ($migrate.Output -join '') -replace '\s', ''
+    Check "reports that sibling as not copied" ($squashed.Contains('Notcopied:projects\C--ci-work-Acme-Corp-Archive-z'))
     Check "leaves the personal copy in place" (Test-Path -LiteralPath (Join-Path $projects 'C--ci-work-Acme-Corp-repo-a\session.jsonl'))
 
     $merged = Get-Content -LiteralPath (Join-Path $work '.claude.json') -Raw | ConvertFrom-Json -AsHashtable
     $keys = @($merged['projects'].Keys)
     Check "merges both case variants of the work project" (($keys -ccontains 'C:/ci work/Acme Corp/repo-a') -and ($keys -ccontains 'c:/ci work/Acme Corp/repo-a')) ($keys -join ', ')
     Check "does not merge the project outside the work root" ($keys -notcontains 'C:/elsewhere/x') ($keys -join ', ')
+    Check "does not merge the sibling's project" ($keys -notcontains 'C:/ci work/Acme Corp Archive/z') ($keys -join ', ')
+    Check "merges a project that never ran a session" ($keys -contains 'C:/ci work/Acme Corp/never-ran') ($keys -join ', ')
+
+    # Copy-Item into a directory that already holds the same name is where a re-run could nest a
+    # second copy inside the first.
+    $again = Invoke-RepoScript 'migrate-workspaces.ps1'
+    Check "a second run exits 0" ($again.ExitCode -eq 0) "exit code $($again.ExitCode)"
+    Check "a second run does not nest a copy inside the first" (-not (Test-Path -LiteralPath (Join-Path $target 'C--ci-work-Acme-Corp-repo-a\C--ci-work-Acme-Corp-repo-a')))
 }
 else {
     Check "refuses to run under 5.1" ($migrateExit -ne 0) "exit code $migrateExit"

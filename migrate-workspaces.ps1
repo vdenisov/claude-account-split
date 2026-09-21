@@ -9,11 +9,16 @@
     It copies, never moves: the personal profile is opened read-only and keeps everything, so it
     stays able to /resume the same sessions.
 
-      * <personal>\projects\*  for projects under the work root   -> <work>\projects\
-        (session transcripts, and the per-project memory\ directories that live alongside them)
       * .claude.json "projects" entries under the work root
         (directory trust, allowedTools, per-project MCP toggles, lastSessionId)
+      * <personal>\projects\<dir> for each of those entries        -> <work>\projects\
+        (session transcripts, and the per-project memory\ directories that live alongside them)
       * the user-scope MCP servers named in $ClaudeMcpServersToCopy, with their headers intact
+
+    Transcript directories are chosen through the project entries, never by matching directory names
+    against the work root: the names are a lossy encoding of the path, so a sibling such as
+    'Acme Corp Archive' is indistinguishable by name from a subdirectory of 'Acme Corp'. Directories
+    that resemble the work root but belong to no project under it are listed, not copied.
 
     Re-running is safe: it overwrites the same entries with the current personal values.
 
@@ -83,31 +88,7 @@ $backup = "$workJson.$stamp.bak"
 Copy-Item -LiteralPath $workJson -Destination $backup
 Write-Host "Backed up work .claude.json -> $backup"
 
-# --- transcripts and project memories --------------------------------------------------------------
-# Project directory names are the project path with every non-alphanumeric character replaced by a
-# hyphen, so the work root maps to a name prefix. Matching on that prefix rather than on a bare
-# substring keeps an unrelated project whose name merely contains the same word from being swept in.
-#
-# The character class has to be the full negated-alphanumeric one, not just separators: a work root
-# containing a space ('C:\Dev\Acme Corp') lands on disk as 'C--Dev-Acme-Corp-...', and a prefix that
-# kept the space would match nothing and report zero copies without failing.
-$sourceProjects = Join-Path $PersonalDir 'projects'
-$targetProjects = Join-Path $WorkDir 'projects'
-New-Item -ItemType Directory -Path $targetProjects -Force | Out-Null
-
-$prefix = ($WorkRoot -replace '[^A-Za-z0-9]', '-')
-$directories = Get-ChildItem -LiteralPath $sourceProjects -Directory |
-               Where-Object { $_.Name.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) }
-
-foreach ($directory in $directories) {
-    Copy-Item -LiteralPath $directory.FullName -Destination $targetProjects -Recurse -Force
-}
-if ($directories.Count -eq 0) {
-    Write-Warning "No project directories under '$WorkRoot' (looked for names starting '$prefix')."
-}
-else { Write-Host "Copied $($directories.Count) project directories into $targetProjects" }
-
-# --- .claude.json merge ----------------------------------------------------------------------------
+# --- which projects belong to the work root ---------------------------------------------------------
 $personal = Get-Content -LiteralPath $personalJson -Raw | ConvertFrom-Json -AsHashtable
 $work     = Get-Content -LiteralPath $workJson     -Raw | ConvertFrom-Json -AsHashtable
 
@@ -115,17 +96,55 @@ if (-not $work.ContainsKey('projects'))   { $work['projects']   = @{} }
 if (-not $work.ContainsKey('mcpServers')) { $work['mcpServers'] = @{} }
 
 # Project keys are stored with mixed separators and mixed drive-letter case, so compare normalised
-# forms rather than doing a literal prefix test.
+# forms rather than doing a literal prefix test. Requiring the separator after the root is what keeps
+# a sibling such as 'C:\Dev\Acme Corp Archive' out.
 $rootNormalised = $WorkRoot.Replace('/', '\').TrimEnd('\').ToLowerInvariant()
-$copied = 0
-foreach ($key in $personal['projects'].Keys) {
-    $normalised = $key.Replace('/', '\').TrimEnd('\').ToLowerInvariant()
-    if ($normalised -eq $rootNormalised -or $normalised.StartsWith($rootNormalised + '\')) {
-        $work['projects'][$key] = $personal['projects'][$key]
-        $copied++
+$workKeys = @($personal['projects'].Keys | Where-Object {
+    $normalised = $_.Replace('/', '\').TrimEnd('\').ToLowerInvariant()
+    $normalised -eq $rootNormalised -or $normalised.StartsWith($rootNormalised + '\')
+})
+
+# --- transcripts and project memories --------------------------------------------------------------
+# A project's directory under projects\ is its path with every non-alphanumeric character replaced by
+# a hyphen. That encoding is lossy -- 'C:\Dev\Acme Corp Archive' and 'C:\Dev\Acme Corp\Archive' both
+# start 'C--Dev-Acme-Corp-' -- so directories are not picked by matching their names against the work
+# root. Each one is derived instead from a project entry selected above, where the path is still
+# intact, and looked up by its exact name. Sort -Unique folds the drive-letter case variants, which
+# name the same directory on a case-insensitive filesystem.
+$sourceProjects = Join-Path $PersonalDir 'projects'
+$targetProjects = Join-Path $WorkDir 'projects'
+New-Item -ItemType Directory -Path $targetProjects -Force | Out-Null
+
+$names = @($workKeys | ForEach-Object { $_ -replace '[^A-Za-z0-9]', '-' } | Sort-Object -Unique)
+$copiedDirectories = 0
+foreach ($name in $names) {
+    # A project that was opened but never ran a session has an entry and no directory.
+    $source = Join-Path $sourceProjects $name
+    if (-not (Test-Path -LiteralPath $source -PathType Container)) { continue }
+    Copy-Item -LiteralPath $source -Destination $targetProjects -Recurse -Force
+    $copiedDirectories++
+}
+if ($copiedDirectories -eq 0) {
+    Write-Warning "No project directories found for the $($workKeys.Count) project entries under '$WorkRoot'."
+}
+else { Write-Host "Copied $copiedDirectories project directories into $targetProjects" }
+
+# Directories whose names start like the work root's but that no work project entry accounts for: a
+# sibling that shares the root's prefix, or a directory whose .claude.json entry is gone. Reported,
+# not guessed at -- copy one across by hand if it does belong to the work account.
+if (Test-Path -LiteralPath $sourceProjects) {
+    $prefix = $WorkRoot -replace '[^A-Za-z0-9]', '-'
+    $unclaimed = @(Get-ChildItem -LiteralPath $sourceProjects -Directory | Where-Object {
+        $_.Name.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and $names -notcontains $_.Name
+    })
+    foreach ($directory in $unclaimed) {
+        Write-Warning "Not copied: projects\$($directory.Name) resembles the work root but matches no project under it."
     }
 }
-Write-Host "Merged $copied project entries"
+
+# --- .claude.json merge ----------------------------------------------------------------------------
+foreach ($key in $workKeys) { $work['projects'][$key] = $personal['projects'][$key] }
+Write-Host "Merged $($workKeys.Count) project entries"
 
 if ($McpServers) {
     foreach ($name in $McpServers) {
