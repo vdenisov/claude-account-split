@@ -225,3 +225,6 @@ if ($script:failures) {
     exit 1
 }
 Write-Host "All checks passed under $edition."
+# Explicit, because the runner's wrapper exits with $LASTEXITCODE, which still holds the code of the
+# last child process -- under 5.1 that is the migration script refusing to run, as it should.
+exit 0
