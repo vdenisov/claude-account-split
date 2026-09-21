@@ -1,4 +1,4 @@
-# Template for profiles.config.ps1 — the only file you edit to adapt the split to your machine.
+# Template for profiles.config.ps1 -- the only file you edit to adapt the split to your machine.
 #
 # Copy this to profiles.config.ps1 and fill it in, or let install.ps1 generate it for you.
 # Both claude-switch.ps1 and statusline-command.ps1 dot-source the real file when present, and

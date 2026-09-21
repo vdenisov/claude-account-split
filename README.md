@@ -30,6 +30,8 @@ Both accounts share one binary (`~\.local\bin\claude.exe`) and one IDE lock-file
 | `migrate-workspaces.ps1` | one-shot copy of work project state from personal to work |
 | `statusline-payload.sample.json` | a captured status-line payload, for testing edits |
 | `package.ps1` | builds a shareable zip of everything except the local config |
+| `tests/ci-smoke.ps1` | end-to-end install check; **CI only** — it writes to the real user profile |
+| `.github/workflows/ci.yml` | lint, then the smoke test under both 5.1 and 7 |
 | `LICENSE` | MIT |
 
 To try a status-line change without restarting a session:

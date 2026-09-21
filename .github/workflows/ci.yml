@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Windows PowerShell 5.1 reads a BOM-less script as the ANSI code page, so a non-ASCII
+      # character inside a string would be silently mangled there. Keeping every script ASCII makes
+      # that impossible rather than something to remember.
+      - name: Scripts are ASCII-only
+        shell: pwsh
+        run: |
+          $bad = Get-ChildItem -Filter *.ps1 -Recurse | ForEach-Object {
+              $file = $_
+              $n = 0
+              foreach ($line in [IO.File]::ReadAllLines($file.FullName)) {
+                  $n++
+                  if ($line -match '[^\x00-\x7F]') {
+                      $rel = Resolve-Path -Relative $file.FullName
+                      "::error file=$rel,line=$n::Non-ASCII character; 5.1 would misread it in a BOM-less script"
+                  }
+              }
+          }
+          $bad
+          if ($bad) { exit 1 }
+
+      # Errors fail the build. Warnings are listed but not enforced: most are deliberate here
+      # (Write-Host for installer output, function names like claude-work, config files whose
+      # variables are only read by the scripts that dot-source them).
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+              Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          }
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse
+          $results | Group-Object RuleName | Sort-Object Count -Descending |
+              Format-Table @{ n = 'Rule'; e = 'Name' }, Count, @{ n = 'Severity'; e = { $_.Group[0].Severity } } -AutoSize
+          $errors = @($results | Where-Object Severity -eq 'Error')
+          foreach ($e in $errors) {
+              $rel = Resolve-Path -Relative $e.ScriptPath
+              "::error file=$rel,line=$($e.Line)::$($e.RuleName): $($e.Message)"
+          }
+          if ($errors) { exit 1 }
+
+  # Installs the split into the runner's real profile under each edition, since an IDE terminal can
+  # launch either and they differ in ways that have broken these scripts before.
+  smoke:
+    name: smoke (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install, verify, migrate
+        run: ./tests/ci-smoke.ps1

@@ -3,7 +3,7 @@
     Sets up the Claude Code personal/work account split on this machine.
 
 .DESCRIPTION
-    Idempotent: safe to re-run. It performs only the mechanical steps —
+    Idempotent: safe to re-run. It performs only the mechanical steps --
 
       1. writes profiles.config.ps1 with the work root and work config dir
       2. creates the work config directory
@@ -66,7 +66,7 @@ function Write-Utf8NoBom([string] $path, [string] $text) {
 }
 
 # Seeding copies a settings.json that may have no status line at all, so this adds the property
-# rather than only rewriting it when present — otherwise the work profile silently ends up without
+# rather than only rewriting it when present -- otherwise the work profile silently ends up without
 # the account tag, which is the one thing the split needs to be visible.
 function Set-StatusLine($settings, [string] $command) {
     if ($settings.statusLine) { $settings.statusLine.command = $command }

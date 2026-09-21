@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Everything here is written to be handed to someone else, with one exception:
-    profiles.config.ps1 holds your machine's values — the work directory tree, and which MCP
+    profiles.config.ps1 holds your machine's values -- the work directory tree, and which MCP
     servers you copy across. That file is excluded and profiles.config.example.ps1 ships in its
     place, so the recipient fills in their own.
 
@@ -15,7 +15,7 @@
     Where to write the zip. Defaults to claude-account-split.zip in the current directory.
 
 .PARAMETER ExtraPatterns
-    Additional regular expressions to treat as local detail — a company name, a username, an
+    Additional regular expressions to treat as local detail -- a company name, a username, an
     internal host.
 
 .EXAMPLE
