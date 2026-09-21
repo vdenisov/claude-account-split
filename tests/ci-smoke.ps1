@@ -161,7 +161,11 @@ $saved = [IO.File]::ReadAllText($profile51)
 $staleLine = '. "$HOME\.claude-profiles\claude-switch.ps1"'
 [IO.File]::WriteAllText($profile51, "$staleLine`r`n")
 $stale = & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'install.ps1') -WorkRoot $root 2>&1
-Check "is reported" (($stale -join "`n") -match 'dot-sources a different claude-switch\.ps1')
+$stale | ForEach-Object { Write-Host "    | $_" }
+# Compared with all whitespace removed: the 5.1 host wraps a long warning at the console width, and
+# on the runner the profile path is long enough to push the wrap into the middle of this phrase.
+$squashed = ($stale -join '') -replace '\s', ''
+Check "is reported" ($squashed.Contains('dot-sourcesadifferentclaude-switch.ps1'))
 Check "is left alone, with nothing added" ([IO.File]::ReadAllText($profile51) -eq "$staleLine`r`n")
 [IO.File]::WriteAllText($profile51, $saved)
 
