@@ -1,0 +1,9 @@
+# Machine-specific: the work directory tree, the work config dir, which MCP servers get copied.
+# profiles.config.example.ps1 is the version that ships.
+profiles.config.ps1
+
+# package.ps1 output
+*.zip
+
+# install.ps1 / migrate-workspaces.ps1 backups
+*.bak
