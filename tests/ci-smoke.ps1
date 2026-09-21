@@ -43,6 +43,18 @@ function Invoke-Fresh([string] $code) {
     return ($out -join "`n") | ConvertFrom-Json
 }
 
+# Runs one of the repo's scripts in a child process of this edition and captures everything it
+# prints. The local 'Continue' matters under 5.1: there, a child writing to stderr through 2>&1
+# while the preference is 'Stop' becomes a terminating error, which would abort this test at the
+# very point where a script is expected to fail loudly (migration refusing to run under 5.1).
+function Invoke-RepoScript([string] $name, [string[]] $arguments = @()) {
+    $ErrorActionPreference = 'Continue'
+    $output = & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo $name) @arguments 2>&1
+    $code = $LASTEXITCODE
+    $output | ForEach-Object { Write-Host "    | $_" }
+    return [pscustomobject] @{ Output = @($output | ForEach-Object { "$_" }); ExitCode = $code }
+}
+
 function Read-Bytes([string] $path) { return [IO.File]::ReadAllBytes($path) }
 function Test-Bom([string] $path) {
     $b = Read-Bytes $path
@@ -87,17 +99,13 @@ Write-Host "  work root '$root', personal settings without statusLine, empty PS7
 
 # --- install, twice --------------------------------------------------------------------------------
 Section "install.ps1, first run"
-$first = & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'install.ps1') -WorkRoot $root -Seed 2>&1
-$firstExit = $LASTEXITCODE
-$first | ForEach-Object { Write-Host "    | $_" }
-Check "exits 0" ($firstExit -eq 0) "exit code $firstExit"
+$first = Invoke-RepoScript 'install.ps1' @('-WorkRoot', $root, '-Seed')
+Check "exits 0" ($first.ExitCode -eq 0) "exit code $($first.ExitCode)"
 
 Section "install.ps1, second run (idempotent)"
-$second = & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'install.ps1') -WorkRoot $root -Seed 2>&1
-$secondExit = $LASTEXITCODE
-$second | ForEach-Object { Write-Host "    | $_" }
-Check "exits 0" ($secondExit -eq 0) "exit code $secondExit"
-$acted = @($second | Where-Object { "$_" -like '==>*' })
+$second = Invoke-RepoScript 'install.ps1' @('-WorkRoot', $root, '-Seed')
+Check "exits 0" ($second.ExitCode -eq 0) "exit code $($second.ExitCode)"
+$acted = @($second.Output | Where-Object { $_ -like '==>*' })
 Check "changes nothing" ($acted.Count -eq 0) ($acted -join '; ')
 
 # --- what the installer wrote ----------------------------------------------------------------------
@@ -160,11 +168,10 @@ Section "Stale switcher line in a profile"
 $saved = [IO.File]::ReadAllText($profile51)
 $staleLine = '. "$HOME\.claude-profiles\claude-switch.ps1"'
 [IO.File]::WriteAllText($profile51, "$staleLine`r`n")
-$stale = & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'install.ps1') -WorkRoot $root 2>&1
-$stale | ForEach-Object { Write-Host "    | $_" }
+$stale = Invoke-RepoScript 'install.ps1' @('-WorkRoot', $root)
 # Compared with all whitespace removed: the 5.1 host wraps a long warning at the console width, and
 # on the runner the profile path is long enough to push the wrap into the middle of this phrase.
-$squashed = ($stale -join '') -replace '\s', ''
+$squashed = ($stale.Output -join '') -replace '\s', ''
 Check "is reported" ($squashed.Contains('dot-sourcesadifferentclaude-switch.ps1'))
 Check "is left alone, with nothing added" ([IO.File]::ReadAllText($profile51) -eq "$staleLine`r`n")
 [IO.File]::WriteAllText($profile51, $saved)
@@ -191,9 +198,8 @@ foreach ($name in 'C--ci-work-Acme-Corp-repo-a', 'C--elsewhere-x') {
 '@ | Set-Content -LiteralPath (Join-Path $HOME '.claude.json')
 '{ "projects": {} }' | Set-Content -LiteralPath (Join-Path $work '.claude.json')
 
-$migrate = & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'migrate-workspaces.ps1') 2>&1
-$migrateExit = $LASTEXITCODE
-$migrate | ForEach-Object { Write-Host "    | $_" }
+$migrate = Invoke-RepoScript 'migrate-workspaces.ps1'
+$migrateExit = $migrate.ExitCode
 
 if ($isCore) {
     Check "exits 0" ($migrateExit -eq 0) "exit code $migrateExit"
@@ -209,7 +215,7 @@ if ($isCore) {
 }
 else {
     Check "refuses to run under 5.1" ($migrateExit -ne 0) "exit code $migrateExit"
-    Check "says PowerShell 7 is needed" (($migrate -join "`n") -match 'PowerShell 7')
+    Check "says PowerShell 7 is needed" (($migrate.Output -join '') -match 'PowerShell7|PowerShell 7')
 }
 
 # --- result ----------------------------------------------------------------------------------------
