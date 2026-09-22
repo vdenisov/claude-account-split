@@ -152,6 +152,21 @@ guidance for the case it can actually encounter.
    file in `<config dir>\ide` *and*, whenever `CLAUDE_CONFIG_DIR` is set, additionally in
    `~\.claude\ide`, which is where the IDE plugin writes it.
 
+## Keeping the spend figure current
+
+If your seat is billed against a spend limit, the figure in the status line comes from a cache the
+CLI only refreshes when you open `/usage` — so it can be a day or more out of date. `refresh-usage.ps1`
+fixes that, and the status line launches it automatically when the figure goes stale. Nothing to
+install; seed a profile by hand with:
+
+```powershell
+.\refresh-usage.ps1 -Force -NoSpawn -ConfigDir "$HOME\.claude-work" -Verbose
+```
+
+Turn it off by setting `$AutoRefreshUsage = $false` at the top of `statusline-command.ps1`. It only
+ever runs for a seat that has a spend limit; a plain subscription gets its usage windows live in the
+status-line payload and has nothing to fetch. See `README.md` for what it does and does not touch.
+
 ## Troubleshooting
 
 **The `claude` function is not defined in a new terminal.** The profile did not load. Check

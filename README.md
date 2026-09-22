@@ -27,6 +27,7 @@ Both accounts share one binary (`~\.local\bin\claude.exe`) and one IDE lock-file
 | `profiles.config.example.ps1` | the template the recipient fills in |
 | `claude-switch.ps1` | the `claude` / `claude-work` / `claude-personal` functions |
 | `statusline-command.ps1` | shared two-line status line for both profiles |
+| `refresh-usage.ps1` | keeps the spend figure current; launched by the status line |
 | `migrate-workspaces.ps1` | one-shot copy of work project state from personal to work |
 | `statusline-payload.sample.json` | a captured status-line payload, for testing edits |
 | `package.ps1` | builds a shareable zip of everything except the local config |
@@ -122,9 +123,21 @@ width, since the renderer measures with `Bun.stringWidth`. Two rules the script 
   their whole job.
 
 `[Personal]` is cyan, `[Work]` yellow, any other config dir magenta under its own directory name —
-all configurable via `$TagColors` / `$TagReset` at the top of the script. Separators are dim. The
-two numbers worth reacting to change colour as they approach a limit: context (yellow at 70%, red
-at 85%) and spend or window usage (yellow at 50/70%, red at 80/90%).
+all configurable via `$TagColors` / `$TagReset` at the top of the script. Separators are dim.
+
+The numbers worth reacting to change colour as they approach a limit, per `$Thresholds`:
+
+| | Yellow | Red |
+| --- | --- | --- |
+| `spend` — of the seat's spend limit | 75% | 90% |
+| `window` — of a 5-hour or 7-day window | 75% | 90% |
+| `context` — of the context window | 70% | 85% |
+| `ageHours` — of the cached spend figure | 6 h | 24 h |
+
+The budget rows sit high deliberately. A warning that appears at half a budget spent is lit for most
+of the month and stops carrying information — the smaller the budget, the earlier a low threshold
+fires and the faster it becomes wallpaper. Context is a different kind of signal: it is warning
+about a compaction ahead rather than a limit you can exhaust, so it keeps a lower pair.
 
 If the tag is still too present, the next step down is faint plus colour — `$TagColors.personal =
 '2;36'` with `$TagReset = '22;39'`, since faint unwinds with 22, separately from the foreground.
@@ -162,6 +175,46 @@ has the reverse (`spend.enabled: false`). The script renders whichever exists an
 one shared file covers both accounts.
 
 The monthly reset date the web UI shows is not in the cache, so it is not displayed.
+
+### Keeping the spend figure current
+
+The CLI's usage cache is not refreshed on a timer. `GET /api/oauth/usage` is called only from
+interactive paths — the `/usage` view and the extra-usage flows — and only one of them writes the
+cache. There is no `usage` subcommand either. In practice the spend figure is exactly as old as the
+last time you opened `/usage`, which can be days: measured once at 18 hours old and showing
+`$11.82` against a real `$63.34`.
+
+`refresh-usage.ps1` closes that gap. It reads the profile's OAuth access token, calls the same
+endpoint, and writes `statusline-usage.json` into the config dir; `Get-UsageSource` then prefers
+whichever of that file and `.claude.json` was fetched more recently. Without it the status line
+behaves exactly as before.
+
+**The trigger lives in the status line, not in a hook.** A `Stop` hook would add a whole process
+start to the end of every turn; the status line already pays for a process on every render, so the
+check costs one file stat and only spawns something when a refresh is actually due. It also means
+refreshes happen while you are using Claude Code and never when you are not. Controlled by
+`$AutoRefreshUsage` and `$UsageRefreshMinutes` at the top of the script, and only ever triggered for
+a seat that has a spend limit at all.
+
+Design constraints worth preserving:
+
+- **It never writes `.claude.json`.** The CLI owns that file and rewrites it wholesale on exit, so
+  an outside writer would lose data. The side file is ours alone.
+- **It never writes `.credentials.json`.** The token is read and sent to `api.anthropic.com` — the
+  service that issued it — and nowhere else. An expired token makes the script give up rather than
+  attempt its own refresh, which would risk breaking CLI auth. Normal CLI use refreshes it well
+  inside its lifetime.
+- **The throttle keys off the last attempt, not the last success**, via a `statusline-usage.attempt`
+  marker touched before spawning. Keying off the cache would retry on every single render once
+  fetching started failing.
+- **Failures are silent by design** — a render must not break over this — so use
+  `-Force -NoSpawn -Verbose` when something looks wrong. That is how both bugs in the first version
+  were found.
+
+The endpoint is undocumented and can change with any CLI release. The failure mode is graceful: the
+figure keeps its last value and the status line labels how old it is (`18h old`, `2d old`, coloured
+yellow past 6 hours and red past a day), which is the honest outcome rather than a silently wrong
+number.
 
 ## The CLAUDE.md asymmetry
 

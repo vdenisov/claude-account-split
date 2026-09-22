@@ -11,12 +11,31 @@ $UseColor = $true
 # Which accounts get the usage line: 'all', 'work', 'personal' or 'none'.
 $BudgetAccounts = 'all'
 
+# Launch refresh-usage.ps1 when the spend figures go older than this many minutes. Set
+# $AutoRefreshUsage to $false to leave the figures to whatever the CLI last cached, which only
+# moves when you open /usage.
+$AutoRefreshUsage = $true
+$UsageRefreshMinutes = 10
+
 # SGR foreground codes for the account tag. The standard 3x set rather than the bright 9x one:
 # the tag is a label, not an alert, and the host's dim does not knock 9x back far enough to stop
 # it shouting. Step down further with '2;36' (faint cyan) if it is still too present; that needs
 # '22;39' to unwind, so change $TagReset with it.
 $TagColors = @{ personal = '36'; work = '33'; other = '35' }
 $TagReset  = '39'
+
+# Where each figure turns yellow, then red: @(warn, danger).
+#
+# The budget ones sit high on purpose. A colour that appears at half a budget spent is on for most
+# of the month and stops meaning anything; these are set to fire when there is genuinely something
+# to react to. Context is different -- it warns about a compaction coming up, not a limit -- so it
+# keeps its own lower pair.
+$Thresholds = @{
+    spend    = @(75, 90)   # percent of the seat's spend limit used
+    window   = @(75, 90)   # percent of a 5-hour or 7-day rate-limit window used
+    context  = @(70, 85)   # percent of the context window used
+    ageHours = @(6, 24)    # how old the cached spend figure is, in hours
+}
 
 # Machine-specific values, shared with claude-switch.ps1. The defaults here stand in when
 # profiles.config.ps1 is missing.
@@ -96,11 +115,14 @@ function Format-AccountTag([string] $account) {
 
 # --- spend limit --------------------------------------------------------------------------------
 
+# The active profile's config directory, resolved the way the CLI resolves it.
+$ClaudeConfigDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
+
 # Mirrors how the CLI resolves its global config file:
 #   <CLAUDE_CONFIG_DIR>\.config.json when that exists, otherwise
 #   <CLAUDE_CONFIG_DIR, or $HOME when unset>\.claude.json
 function Get-GlobalConfigPath {
-    $configDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
+    $configDir = $ClaudeConfigDir
     $alt = Join-Path $configDir '.config.json'
     if (Test-Path -LiteralPath $alt) { return $alt }
     $root = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { $HOME }
@@ -132,22 +154,87 @@ function Get-JsonBlock([string] $text, [int] $start) {
     return $null
 }
 
-# A seat's spend limit (Enterprise usage-based billing) is not part of the status-line payload,
-# only of the CLI's own usage cache in .claude.json. That cache is refreshed off API responses at
-# most once every five minutes, so it lags a little; the CLI stops trusting it after an hour.
+# Picks the fresher of two sources for the usage figures, and returns its raw text plus the epoch
+# milliseconds it was fetched at:
+#
+#   * .claude.json's cachedUsageUtilization, which the CLI only refreshes when something asks for
+#     usage status -- in practice, when you open /usage. It can be days old.
+#   * statusline-usage.json, written by refresh-usage.ps1 on whatever cadence you wired it to.
+#
+# Neither is required. With no refresher installed this degrades to exactly the old behaviour.
+function Get-UsageSource {
+    $candidates = @()
+
+    $configPath = Get-GlobalConfigPath
+    if (Test-Path -LiteralPath $configPath) {
+        $raw = Read-Shared $configPath
+        $cacheAt = if ($raw) { $raw.IndexOf('"cachedUsageUtilization"') } else { -1 }
+        if ($cacheAt -ge 0) {
+            $header = $raw.Substring($cacheAt, [Math]::Min(200, $raw.Length - $cacheAt))
+            $stamp = [regex]::Match($header, '"fetchedAtMs"\s*:\s*(\d+)')
+            $candidates += [pscustomobject] @{
+                Text        = $raw.Substring($cacheAt)
+                FetchedAtMs = if ($stamp.Success) { [int64] $stamp.Groups[1].Value } else { 0 }
+            }
+        }
+    }
+
+    $sidePath = Join-Path $ClaudeConfigDir 'statusline-usage.json'
+    if (Test-Path -LiteralPath $sidePath) {
+        $raw = Read-Shared $sidePath
+        if ($raw) {
+            $stamp = [regex]::Match($raw, '"fetchedAtMs"\s*:\s*(\d+)')
+            $candidates += [pscustomobject] @{
+                Text        = $raw
+                FetchedAtMs = if ($stamp.Success) { [int64] $stamp.Groups[1].Value } else { 0 }
+            }
+        }
+    }
+
+    if (-not $candidates) { return $null }
+    return ($candidates | Sort-Object FetchedAtMs -Descending)[0]
+}
+
+# Kicks off a detached refresh when the figures have gone stale.
+#
+# The trigger lives here rather than in a Stop hook because the status line already pays for a
+# process on every render: when nothing is due this costs one file stat, whereas a hook would add
+# a whole process start to the end of every turn. It also means refreshes happen while you are
+# actually using Claude Code, and never when you are not.
+#
+# The marker file is touched before spawning, so a burst of renders cannot start a burst of
+# fetches, and a failing fetch backs off for the full interval instead of retrying every frame.
+function Start-UsageRefresh {
+    if (-not $AutoRefreshUsage) { return }
+
+    $script = Join-Path $PSScriptRoot 'refresh-usage.ps1'
+    if (-not (Test-Path -LiteralPath $script)) { return }
+
+    $attempt = Join-Path $ClaudeConfigDir 'statusline-usage.attempt'
+    if (Test-Path -LiteralPath $attempt) {
+        $age = ([DateTime]::Now - (Get-Item -LiteralPath $attempt).LastWriteTime).TotalMinutes
+        if ($age -lt $UsageRefreshMinutes) { return }
+    }
+    New-Item -ItemType File -Path $attempt -Force | Out-Null
+
+    # One quoted string, not an array: with an array the quotes are passed through literally and
+    # -File rejects them as illegal path characters, while without quotes any space in the path
+    # splits the argument. Both paths here can contain spaces.
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -NoSpawn -Force -ConfigDir "{1}"' -f
+                 $script, $ClaudeConfigDir
+    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $arguments | Out-Null
+}
+
+# A seat's spend limit (Enterprise usage-based billing) never arrives in the status-line payload;
+# it has to be read from whichever cache is freshest.
 function Get-SpendSegment {
-    $path = Get-GlobalConfigPath
-    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    $source = Get-UsageSource
+    if (-not $source) { return $null }
+    $raw = $source.Text
 
-    # Deliberately not ConvertFrom-Json: .claude.json holds project keys differing only in case,
-    # which the parser rejects, and -AsHashtable does not exist in Windows PowerShell 5.1.
-    $raw = Read-Shared $path
-    if (-not $raw) { return $null }
-
-    $cacheAt = $raw.IndexOf('"cachedUsageUtilization"')
-    if ($cacheAt -lt 0) { return $null }
-
-    $spendAt = $raw.IndexOf('"spend":', $cacheAt)
+    # Deliberately not ConvertFrom-Json for the .claude.json case: it holds project keys differing
+    # only in case, which the parser rejects, and -AsHashtable does not exist in PowerShell 5.1.
+    $spendAt = $raw.IndexOf('"spend":')
     if ($spendAt -lt 0) { return $null }
 
     $block = Get-JsonBlock $raw $raw.IndexOf('{', $spendAt)
@@ -181,13 +268,17 @@ function Get-SpendSegment {
     if ($reported.Success) { $percent = [double]::Parse($reported.Groups[1].Value, $Inv) }
 
     $text = '{0}/{1}' -f (Format-Money $symbol $usedAmount), (Format-Money $symbol $limitAmount)
-    $segment = 'Spend ' + (Colorize $text (Get-ThresholdColor $percent 50 80))
+    $segment = 'Spend ' + (Colorize $text (Get-ThresholdColor $percent $Thresholds.spend[0] $Thresholds.spend[1]))
 
-    $header = $raw.Substring($cacheAt, [Math]::Min(200, $raw.Length - $cacheAt))
-    $fetched = [regex]::Match($header, '"fetchedAtMs"\s*:\s*(\d+)')
-    if ($fetched.Success) {
-        $age = [DateTimeOffset]::UtcNow - [DateTimeOffset]::FromUnixTimeMilliseconds([int64] $fetched.Groups[1].Value)
-        if ($age.TotalHours -ge 1) { $segment += ' stale' }
+    # Age is worth showing rather than hiding: without a refresher wired up, this figure only moves
+    # when you open /usage, and a spend number that silently lags by a day is worse than no number.
+    if ($source.FetchedAtMs -gt 0) {
+        $age = [DateTimeOffset]::UtcNow - [DateTimeOffset]::FromUnixTimeMilliseconds($source.FetchedAtMs)
+        if ($age.TotalHours -ge 1) {
+            $label = if ($age.TotalDays -ge 1) { '{0}d old' -f [int] $age.TotalDays }
+                     else { '{0}h old' -f [int] $age.TotalHours }
+            $segment += ' ' + (Colorize $label (Get-ThresholdColor $age.TotalHours $Thresholds.ageHours[0] $Thresholds.ageHours[1]))
+        }
     }
 
     return $segment
@@ -209,7 +300,7 @@ if ($model) {
 
 $usedPercent = $data.context_window.used_percentage
 if ($null -ne $usedPercent) {
-    $context = 'Context: ' + (Colorize "$([int] $usedPercent)%" (Get-ThresholdColor ([double] $usedPercent) 70 85))
+    $context = 'Context: ' + (Colorize "$([int] $usedPercent)%" (Get-ThresholdColor ([double] $usedPercent) $Thresholds.context[0] $Thresholds.context[1]))
     $totalTokens = [int64] $data.context_window.total_input_tokens + [int64] $data.context_window.total_output_tokens
     if ($totalTokens -gt 0) { $context += " [$(Format-Tokens $totalTokens)]" }
     $head += $context
@@ -229,7 +320,12 @@ if ($showUsage) {
     if ($null -ne $cost) { $usage += 'Session ' + (Format-Money '$' ([double] $cost)) }
 
     $spend = Get-SpendSegment
-    if ($spend) { $usage += $spend }
+    if ($spend) {
+        $usage += $spend
+        # Only worth refreshing for a seat that actually has a spend limit; a plain subscription
+        # gets its windows live from the payload and has nothing to fetch.
+        Start-UsageRefresh
+    }
 
     # Absent for API-key auth, for seats billed against a spend limit, and for subscribers until
     # the first API response of the session.
@@ -240,7 +336,7 @@ if ($showUsage) {
 
         $usedPct = [double] $limit.used_percentage
         $left = 100 - [int] [Math]::Round($usedPct)
-        $text = (Colorize "$left% left" (Get-ThresholdColor $usedPct 70 90))
+        $text = (Colorize "$left% left" (Get-ThresholdColor $usedPct $Thresholds.window[0] $Thresholds.window[1]))
         $reset = Format-Reset $limit.resets_at
         if ($reset) { $usage += "$label $text ($reset)" } else { $usage += "$label $text" }
     }
