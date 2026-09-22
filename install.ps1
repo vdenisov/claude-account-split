@@ -18,9 +18,11 @@
 
 .PARAMETER WorkRoot
     Directory tree owned by the work account. `claude` routes anything at or under it to work.
+    Required only when profiles.config.ps1 is being written: on first install, or with -Force.
 
 .PARAMETER WorkDir
-    Config directory for the work account. Defaults to ~\.claude-work.
+    Config directory for the work account. Defaults to ~\.claude-work. Like -WorkRoot, ignored when
+    profiles.config.ps1 already exists and -Force is not given.
 
 .PARAMETER Seed
     Copy settings.json, skills\ and plugins\ from the personal profile into the work one. Skipped
@@ -37,7 +39,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string] $WorkRoot,
+    [string] $WorkRoot,
     [string] $WorkDir = (Join-Path $HOME '.claude-work'),
     [string] $PersonalDir = (Join-Path $HOME '.claude'),
     [switch] $Seed,
@@ -85,8 +87,13 @@ if (-not (Test-Path -LiteralPath $claudeExe)) {
 $configFile = Join-Path $here 'profiles.config.ps1'
 if ((Test-Path -LiteralPath $configFile) -and -not $Force) {
     Write-Skip "profiles.config.ps1 already exists (pass -Force to rewrite)"
+    # The existing config is what the switcher uses, so the remaining steps must use it too.
+    . $configFile
+    $WorkRoot = $ClaudeWorkRoot
+    $WorkDir  = $ClaudeWorkDir
 }
 else {
+    if (-not $WorkRoot) { throw "-WorkRoot is required to write profiles.config.ps1." }
     Write-Step "Writing profiles.config.ps1"
     @"
 # Local settings for the Claude Code account split. See README.md and SETUP.md.

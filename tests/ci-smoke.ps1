@@ -108,6 +108,12 @@ Check "exits 0" ($second.ExitCode -eq 0) "exit code $($second.ExitCode)"
 $acted = @($second.Output | Where-Object { $_ -like '==>*' })
 Check "changes nothing" ($acted.Count -eq 0) ($acted -join '; ')
 
+Section "install.ps1, re-run without -WorkRoot (taken from profiles.config.ps1)"
+$bare = Invoke-RepoScript 'install.ps1'
+Check "exits 0" ($bare.ExitCode -eq 0) "exit code $($bare.ExitCode)"
+$acted = @($bare.Output | Where-Object { $_ -like '==>*' })
+Check "changes nothing" ($acted.Count -eq 0) ($acted -join '; ')
+
 # --- what the installer wrote ----------------------------------------------------------------------
 Section "Installed state"
 $config = Get-Content -LiteralPath (Join-Path $repo 'profiles.config.ps1') -Raw

@@ -20,6 +20,10 @@ if (Test-Path -LiteralPath $script:ClaudeConfigFile) {
     if ($ClaudeWorkRoot) { $script:ClaudeWorkRoot = $ClaudeWorkRoot }
     if ($ClaudeWorkDir)  { $script:ClaudeWorkDir  = $ClaudeWorkDir }
 }
+else {
+    # Silent placeholders route every real work directory to the personal account.
+    Write-Warning "claude-switch: $script:ClaudeConfigFile not found; using placeholder work root $script:ClaudeWorkRoot. Run install.ps1."
+}
 
 function Get-ClaudeAccountForPath {
     param([string] $Path = $PWD.ProviderPath)
